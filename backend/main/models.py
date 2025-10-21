@@ -162,6 +162,12 @@ class PersonRecord(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=["data_source"]),
+            models.Index(
+                fields=["sha256"],
+                name="main_person_sha256",
+                # Only index non null values
+                condition=models.Q(sha256__isnull=False),
+            ),
         ]
 
 

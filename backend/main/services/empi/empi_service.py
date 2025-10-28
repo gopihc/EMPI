@@ -445,7 +445,29 @@ class EMPIService:
         person_id: str = "",
         source_person_id: str = "",
         data_source: str = "",
+        skip: int | None = None,
+        take: int | None = None,
     ) -> list[PotentialMatchSummaryDict]:
+        """Retrieve aggregated potential match summaries that match the provided search criteria.
+
+        Parameters:
+                first_name (str): Filter by person first name (partial match).
+                last_name (str): Filter by person last name (partial match).
+                birth_date (str): Filter by birth date (ISO date string).
+                person_id (str): Filter by internal person UUID.
+                source_person_id (str): Filter by external/source person identifier.
+                data_source (str): Filter by data source name.
+                skip (int | None): Number of results to skip (pagination offset).
+                take (int | None): Maximum number of results to return (pagination limit).
+
+        Returns:
+                list[PotentialMatchSummaryDict]: A list of aggregated potential match summaries, each containing at least:
+                - id: MatchGroup identifier
+                - first_name: Representative first name for the match group
+                - last_name: Representative last name for the match group
+                - data_sources: List of distinct data sources present in the match group
+                - max_match_probability: Highest match probability observed within the group
+        """
         self.logger.info("Retrieving potential matches")
 
         match_group_table = MatchGroup._meta.db_table
@@ -460,6 +482,7 @@ class EMPIService:
             source_person_id=source_person_id,
             data_source=data_source,
         )
+        offset, limit = self._format_pagination_clauses(skip, take)
 
         with connection.cursor() as cursor:
             # TODO: We should consider creating a MatchGroupPerson table to make lookups simpler,
@@ -525,7 +548,10 @@ class EMPIService:
                         array_agg(distinct data_source order by data_source) AS data_sources,
                         (array_agg(match_probability order by match_probability desc))[1] as max_match_probability
                     from mg_records
-                    group by id;
+                    group by id
+                    order by id
+                    {limit}
+                    {offset}
                 """
             ).format(
                 match_group_table=sql.Identifier(match_group_table),
@@ -533,6 +559,8 @@ class EMPIService:
                 person_record_table=sql.Identifier(person_record_table),
                 person_table=sql.Identifier(person_table),
                 search_conditions=sql.SQL(" ").join(search_conditions["conditions"]),
+                limit=limit,
+                offset=offset,
             )
             cursor.execute(get_potential_matches_sql, search_conditions["params"])
 
@@ -554,12 +582,18 @@ class EMPIService:
         match_group_id: int,
         fields: str = "id,first_name,last_name,data_source",
     ) -> list[PersonDict]:
-        """Get persons for a potential match with selective field loading.
+        """Fetch persons involved in a potential match and return each as a PersonDict with selected record fields.
 
-        Args:
-            cursor: Database cursor
-            match_group_id: ID of the match group
-            fields: Comma-separated list of fields to include (default: essential fields only)
+        Parameters:
+            cursor (CursorWrapper): Database cursor positioned for executing the query.
+            match_group_id (int): ID of the match group to retrieve persons for.
+            fields (str): Comma-separated list of allowed record fields to include for each person (defaults to "id,first_name,last_name,data_source").
+
+        Returns:
+            list[PersonDict]: List of persons; each dict contains `uuid`, `created`, `version`, and `records` where `records` is a list of JSON objects with the requested fields.
+
+        Raises:
+            ValueError: If any requested field is not in the whitelist of allowed fields.
         """
         match_group_table = MatchGroup._meta.db_table
         splink_result_table = SplinkResult._meta.db_table
@@ -722,7 +756,7 @@ class EMPIService:
             records_clause = f"""
                 array_agg(
                     jsonb_build_object(
-                        {', '.join(field_mappings)}
+                        {", ".join(field_mappings)}
                     )
                 ) as records
             """
@@ -1503,7 +1537,28 @@ class EMPIService:
         person_id: str = "",
         source_person_id: str = "",
         data_source: str = "",
+        skip: int | None = None,
+        take: int | None = None,
     ) -> list[PersonSummaryDict]:
+        """Retrieve summarized persons that match the given search filters and return them with optional pagination.
+
+        Parameters:
+            first_name (str): Partial or full first name to filter by (optional).
+            last_name (str): Partial or full last name to filter by (optional).
+            birth_date (str): Birth date to filter by (optional).
+            person_id (str): Internal person UUID to filter by (optional).
+            source_person_id (str): External/source person identifier to filter by (optional).
+            data_source (str): Data source name to filter records by (optional).
+            skip (int | None): Number of results to skip for pagination (optional).
+            take (int | None): Maximum number of results to return for pagination (optional).
+
+        Returns:
+            persons (list[PersonSummaryDict]): A list of person summaries. Each summary contains:
+                - `uuid` (str): Person UUID.
+                - `first_name` (str): Representative first name from the person's records.
+                - `last_name` (str): Representative last name from the person's records.
+                - `data_sources` (list[str]): Distinct data sources associated with the person.
+        """
         self.logger.info("Retrieving persons")
 
         match_group_table = MatchGroup._meta.db_table
@@ -1519,6 +1574,7 @@ class EMPIService:
             data_source=data_source,
         )
 
+        offset, limit = self._format_pagination_clauses(skip, take)
         with connection.cursor() as cursor:
             get_persons_sql = sql.SQL(
                 """
@@ -1549,7 +1605,9 @@ class EMPIService:
                         array_agg(distinct data_source) AS data_sources
                     from p_records
                     group by uuid
-                    order by last_name, first_name;
+                    order by last_name, first_name, uuid
+                    {limit}
+                    {offset}
                 """
             ).format(
                 match_group_table=sql.Identifier(match_group_table),
@@ -1557,6 +1615,8 @@ class EMPIService:
                 person_record_table=sql.Identifier(person_record_table),
                 person_table=sql.Identifier(person_table),
                 search_conditions=sql.SQL(" ").join(search_conditions["conditions"]),
+                offset=offset,
+                limit=limit,
             )
             cursor.execute(get_persons_sql, search_conditions["params"])
 
@@ -1992,13 +2052,12 @@ class EMPIService:
                 )
 
     def estimate_export_count(self) -> int:
-        """Estimate the number of records that will be exported.
+        """Estimate the number of potential match pairs that will be exported.
 
-        This method runs a count query to estimate the total number of records
-        that will be exported, useful for progress tracking.
+        Runs a database count using the same join criteria as the export to provide an estimate for progress reporting.
 
         Returns:
-            Estimated number of records to be exported
+            estimated_count (int): Number of SplinkResult rows (potential match pairs) that will be exported.
         """
         match_group_table = MatchGroup._meta.db_table
         splink_result_table = SplinkResult._meta.db_table
@@ -2056,3 +2115,25 @@ class EMPIService:
             )
 
             return estimated_count
+
+    def _format_pagination_clauses(
+        self, skip: int | None, take: int | None
+    ) -> tuple[sql.Composed | sql.SQL, sql.Composed | sql.SQL]:
+        """Constructs SQL OFFSET and LIMIT clauses for pagination.
+
+        Parameters:
+            skip (int | None): Number of rows to skip (OFFSET). If None, no OFFSET clause is produced.
+            take (int | None): Maximum number of rows to return (LIMIT). If None, no LIMIT clause is produced.
+
+        Returns:
+            tuple[offset_clause, limit_clause] (tuple[sql.SQL, sql.SQL]): Two `sql.SQL` objects: the first is the OFFSET clause (possibly empty), the second is the LIMIT clause (possibly empty).
+        """
+        offset_clause: sql.Composed | sql.SQL = sql.SQL("")
+        limit_clause: sql.Composed | sql.SQL = sql.SQL("")
+        if skip is not None and skip >= 0:
+            offset_clause = sql.SQL("offset {offset}").format(
+                offset=sql.Literal(int(skip))
+            )
+        if take is not None and take >= 0:
+            limit_clause = sql.SQL("limit {limit}").format(limit=sql.Literal(int(take)))
+        return offset_clause, limit_clause

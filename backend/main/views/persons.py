@@ -95,7 +95,13 @@ class GetPersonResponse(Serializer):
 )
 @api_view(["GET"])
 def get_persons(request: Request) -> Response:
-    """Retrieve a paginated list of persons based on optional filters."""
+    """Retrieve a paginated list of persons matching optional query filters.
+
+    Valid query parameters include first_name, last_name, birth_date, person_id, source_person_id, data_source, page, and page_size. The response payload contains a "persons" list where each entry includes `id`, `first_name`, `last_name`, and `data_sources`.
+
+    Returns:
+        Response: 200 response with paginated persons under the "persons" key; 400 on invalid query parameters; 500 with an error payload on unexpected internal errors.
+    """
     pagination = PaginationMixin()
     serializer = GetPersonsRequest(data=request.query_params)
     serializer.is_valid(raise_exception=True)
@@ -106,6 +112,8 @@ def get_persons(request: Request) -> Response:
     filters = {k: v for k, v in data.items() if k not in {"page", "page_size"}}
     if "person_id" in filters:
         filters["person_id"] = remove_prefix(filters["person_id"])
+    page, page_size = pagination.get_pagination_params(data)
+    filters = filters | pagination.get_skip_take(data)
 
     try:
         persons = empi.get_persons(**filters)
@@ -114,8 +122,6 @@ def get_persons(request: Request) -> Response:
             error_data("Unexpected internal error"),
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-
-    page, page_size = pagination.get_pagination_params(data)
 
     results = [
         {
@@ -128,7 +134,10 @@ def get_persons(request: Request) -> Response:
     ]
 
     return pagination.create_paginated_response(
-        results, page, page_size, response_key="persons"
+        results,
+        page,
+        page_size,
+        response_key="persons",
     )
 
 

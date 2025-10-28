@@ -565,13 +565,9 @@ class Matcher:
         return df
 
     def update_splink_settings(self, job: Job) -> None:
-        """Update Splink settings with overrides.
+        """Modify Splink blocking rules to scope matches to the provided Job and apply configured overrides.
 
-        - Append a job_id comparison to each blocking rule. Only compare rows if at least
-          one of the rows originated from the current job.
-
-        - Override prefixes for output column names to ensure we know what those columns
-          are called.
+        Appends job-specific comparisons to each blocking rule so a pair is considered only if at least one record comes from the given job, replaces the config's blocking_rules_to_generate_predictions with these scoped rules, and updates the config with the Matcher instance's Splink overrides.
         """
         config = job.config
 
@@ -591,13 +587,13 @@ class Matcher:
             # Rule queries are combined with 'union all'.
             rules.append(
                 {
-                    "blocking_rule": f"({rule["blocking_rule"]}) and l.job_id = {job.id}",
+                    "blocking_rule": f"({rule['blocking_rule']}) and l.job_id = {job.id}",
                     "sql_dialect": self.splink_settings_overrides["sql_dialect"],
                 }
             )
             rules.append(
                 {
-                    "blocking_rule": f"({rule["blocking_rule"]}) and r.job_id = {job.id}",
+                    "blocking_rule": f"({rule['blocking_rule']}) and r.job_id = {job.id}",
                     "sql_dialect": self.splink_settings_overrides["sql_dialect"],
                 }
             )

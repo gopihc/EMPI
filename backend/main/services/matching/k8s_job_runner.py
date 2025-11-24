@@ -30,8 +30,10 @@ class K8sJobRunner(JobRunner):
         config = get_config()
         version = config.version
         runner_config = config.matching_service.k8s_job_runner
-        namespace = runner_config.job_namespace if runner_config and hasattr(runner_config, 'job_namespace') and runner_config.job_namespace else None
-        self.k8s = K8sJobClient(namespace=namespace) if namespace else K8sJobClient()
+        namespace = runner_config.job_namespace
+        if namespace:
+            # Override the default client with a namespace-scoped one
+            self.k8s = K8sJobClient(namespace=namespace)
 
 
         assert runner_config
